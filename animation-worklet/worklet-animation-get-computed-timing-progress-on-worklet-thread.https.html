@@ -1,0 +1,95 @@
+<html>
+<title>Animation Worklet should update calculated timing whenever localTime changes</title>
+<link rel="help" href="https://drafts.css-houdini.org/css-animationworklet/">
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/web-animations/testcommon.js"></script>
+<script src="common.js"></script>
+
+<div id="inBox"></div>
+<div id="outBox"></div>
+
+<script id="get_computed_timing_animator" type="text/worklet">
+  registerAnimator('get_computed_timing', class {
+    constructor(options, state) {
+      this.currentStatus = state ? state.status : 0;
+    }
+    state() {
+      return {
+        status: 0
+      }
+    }
+    animate(currentTime, effect){
+      const effects = effect.getChildren();
+
+      // effectIn is used to signal back and forth between worklet and main thread
+      let effectIn = effects[0];
+      let effectOut = effects[1];
+
+      if (this.currentStatus === 0){
+        this.currentStatus = 4200; // 20% of the way through the last iteration
+        effectIn.localTime = this.currentStatus;
+
+        effectOut.localTime = effectIn.getComputedTiming().progress * 100;
+      }
+      else if (this.currentStatus === 4200){
+        // set local time of effectIn which should cause effectIn to recompute its calculated timing
+        this.currentStatus = 3500; // 50% of the way through second iteration
+        effectIn.localTime = this.currentStatus;
+
+        // using the calculated timing of effectIn, set effectOut.localTime. This will allow us to
+        // validate the values using asserts on the main thread
+        effectOut.localTime = effectIn.getComputedTiming().progress * 100;
+      }
+    }
+  });
+</script>
+
+<script>
+  promise_test(async t => {
+    await runInAnimationWorklet(document.getElementById('get_computed_timing_animator').textContent);
+
+    const inBox = document.getElementById("inBox");
+    const effectIn = new KeyframeEffect(
+      inBox,
+      [
+        { opacity: 0 },
+        { opacity: 1 }
+      ], {
+        delay: 2000,
+        duration: 1000,
+        iterations: 3
+      }
+    );
+    const outBox = document.getElementById("outBox");
+    const effectOut = new KeyframeEffect(
+      outBox,
+      [
+        { transform: 'translateY(100px)' },
+        { transform: 'translateY(200px)' }
+      ], {
+        duration: 100
+      }
+    );
+
+    const animation = new WorkletAnimation('get_computed_timing', [effectIn, effectOut]);
+    animation.play();
+
+    // Validate initial values
+    let expected_transform0 = "none";
+    assert_equals(getComputedStyle(outBox).transform, expected_transform0);
+
+    await waitForAnimationFrameWithCondition(() => {return getComputedStyle(inBox).opacity == "0.2"});
+    // Animation has started and we have finished the first step through the animator
+    let expected_transform1 = "matrix(1, 0, 0, 1, 0, 120)";
+    assert_equals(getComputedStyle(outBox).transform, expected_transform1);
+
+
+    await waitForAnimationFrameWithCondition(() => {return getComputedStyle(inBox).opacity == "0.5"});
+    // This happens after an effect local time has changed in the worklet
+    let expected_transform2 = "matrix(1, 0, 0, 1, 0, 150)";
+    assert_equals(getComputedStyle(outBox).transform, expected_transform2);
+
+  }, "WorkletAnimation effect should recompute its calculated timing if its local time changes");
+</script>
